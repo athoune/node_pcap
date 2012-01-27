@@ -8,6 +8,7 @@ var util       = require("util"),
     node_http = require('http'),
     node_url  = require('url'),
     zlib      = require('zlib'),
+    events    = require('events'),
     pcap      = require("pcap"), pcap_session,
     ANSI,
     options   = {};
@@ -45,6 +46,86 @@ ANSI = (function () {
         return CSI + formats[format][0] + 'm' + str + CSI + formats[format][1] + 'm';
     };
 }());
+
+function HttpFlow() {
+    this.sessions = {};
+}
+
+util.inherits(HttpFlow, events.EventEmitter);
+
+HttpFlow.prototype.request = function(from, to, request) {
+    if(! this.sessions[[from, to]]) {
+        this.sessions[[from, to]] = {};
+    }
+    this.sessions[[from, to]].request = request;
+    this.sessions[[from, to]].to = to;
+};
+
+HttpFlow.prototype.request_body = function(from, to, body) {
+    this.sessions[[from, to]] = {request_body: body};
+};
+
+HttpFlow.prototype.response = function(to, from, response) {
+    var r = this.sessions[[from, to]];
+    this.emit('session', {
+        request: {
+            dest : r.to,
+            head: r.request,
+            body: r.request_body},
+        response: {
+            head: response,
+            body: r.response_body}
+        }
+        );
+    delete this.sessions[[from, to]];
+};
+
+HttpFlow.prototype.response_data = function(to, from, data) {
+    this.sessions[[from, to]].response_body = data;
+};
+
+var flow = new HttpFlow();
+
+flow.on('session', function(session) {
+    if(session.response.body && session.response.head.headers['Content-Encoding'] === 'gzip') {
+        zlib.gunzip(session.response.body, function(err, d) {
+            displaySession(session, d);
+            //console.log(session);
+            //console.log(ANSI('response', 'red'), response);
+            //console.log(ANSI(d.toString('utf8'), "green"));
+            //console.log();
+        });
+    } else {
+        displaySession(session, session.response.body);
+    }
+});
+
+function displaySession(session, resp_body) {
+    console.log(ANSI('Request', 'red'),
+        'http://',
+        session.request.dest,
+        ANSI(session.request.head.url, 'bold'),
+        '(HTTP', session.request.head.http_version, ')',
+        ANSI(session.request.head.method, 'bold'));
+    console.log(format_headers(session.request.head.headers));
+    console.log('  body length', session.request.head.body_len);
+    if(session.request.body) {
+        console.log(ANSI(session.request.body, 'green'));
+    }
+    console.log(ANSI('Response', 'blue'),
+        session.response.head.status_code);
+    console.log(format_headers(session.response.head.headers));
+    console.log('  body length', session.response.head.body_len);
+    if(resp_body) {
+        console.log(ANSI(resp_body, 'green'));
+    }
+    console.log();
+}
+
+function HttpSession(from, to) {
+    this.from = from;
+    this.to = to;
+}
 
 function lpad(num, len) {
     var str = num.toString();
@@ -333,28 +414,31 @@ function setup_listeners() {
             return;
         }
 
-        console.log(format_line_start(session.current_cap_time, session.src_name, session.dst_name) +
-            " #" + session.http_request_count + " HTTP " + http.request.http_version + " request: " +
-            ANSI(ANSI(http.request.method, "bold") + " " + http.request.url, "yellow"));
+        //console.log(format_line_start(session.current_cap_time, session.src_name, session.dst_name) +
+            //" #" + session.http_request_count + " HTTP " + http.request.http_version + " request: " +
+            //ANSI(ANSI(http.request.method, "bold") + " " + http.request.url, "yellow"));
 
-        if (options.headers) {
-            console.log(format_headers(http.request.headers));
-        }
+        //if (options.headers) {
+            //console.log(format_headers(http.request.headers));
+        //}
     });
 
     tcp_tracker.on('http request body', function (session, http, data) {
         if (! filter_match(http)) {
             return;
         }
+        var b = new Buffer(data.length);
+        data.copy(b);
+        flow.request_body(session.src_name, session.dst_name, b);
 
-        console.log(format_line_start(session.current_cap_time, session.src_name, session.dst_name) +
-            " #" + session.http_request_count + " HTTP " + http.request.http_version + " request body: " +
-            format_size(data.length));
+        //console.log(format_line_start(session.current_cap_time, session.src_name, session.dst_name) +
+            //" #" + session.http_request_count + " HTTP " + http.request.http_version + " request body: " +
+            //format_size(data.length));
 
-        if (options.bodies) {
+        //if (options.bodies) {
             // TODO - this is not at all what you want for gzipped or binary data
-            console.log(ANSI(data.toString("utf8"), "green"));
-        }
+            //console.log(ANSI(data.toString("utf8"), "green"));
+        //}
     });
 
     tcp_tracker.on('http request complete', function (session, http) {
@@ -362,11 +446,12 @@ function setup_listeners() {
             return;
         }
 
-        if (http.request.body_len > 0 || http.request.method !== "GET") {
-            console.log(format_line_start(session.current_cap_time, session.src_name, session.dst_name) +
-                " #" + session.http_request_count + " HTTP " + http.request.http_version + " request complete " +
-                format_size(http.request.body_len));
-        }
+        //if (http.request.body_len > 0 || http.request.method !== "GET") {
+            //console.log(format_line_start(session.current_cap_time, session.src_name, session.dst_name) +
+                //" #" + session.http_request_count + " HTTP " + http.request.http_version + " request complete " +
+                //format_size(http.request.body_len));
+        //}
+        flow.request(session.src_name, session.dst_name, http.request);
     });
 
     tcp_tracker.on('http response', function (session, http) {
@@ -374,34 +459,35 @@ function setup_listeners() {
             return;
         }
 
-        console.log(format_line_start(session.current_cap_time, session.dst_name, session.src_name) +
-            " #" + session.http_request_count + " HTTP " + http.response.http_version + " response: " +
-            ANSI(http.response.status_code + " " + node_http.STATUS_CODES[http.response.status_code], "yellow"));
+        //console.log(format_line_start(session.current_cap_time, session.dst_name, session.src_name) +
+            //" #" + session.http_request_count + " HTTP " + http.response.http_version + " response: " +
+            //ANSI(http.response.status_code + " " + node_http.STATUS_CODES[http.response.status_code], "yellow"));
 
-        if (options.headers) {
-            console.log(format_headers(http.response.headers));
-        }
+        //if (options.headers) {
+            //console.log(format_headers(http.response.headers));
+        //}
     });
 
     tcp_tracker.on('http response body', function (session, http, data) {
         if (! filter_match(http)) {
             return;
         }
+        //[FIXME] if not to heavy
+        flow.response_data(session.dst_name, session.src_name, data);
+        //console.log(format_line_start(session.current_cap_time, session.dst_name, session.src_name) +
+            //" #" + session.http_request_count + " HTTP " + http.response.http_version + " response body: " +
+            //format_size(data.length));
 
-        console.log(format_line_start(session.current_cap_time, session.dst_name, session.src_name) +
-            " #" + session.http_request_count + " HTTP " + http.response.http_version + " response body: " +
-            format_size(data.length));
-
-        if (options.bodies) {
+        //if (options.bodies) {
             // TODO - this is not at all what you want for gzipped or binary data
-            if(options.gunzip && http.response.headers['Content-Encoding'] === 'gzip') {
-                zlib.gunzip(data, function(err, d) {
-                    console.log(ANSI(d.toString("utf8"), "green"));
-                });
-            } else {
-                console.log(ANSI(data.toString("utf8"), "green"));
-            }
-        }
+            //if(options.gunzip && http.response.headers['Content-Encoding'] === 'gzip') {
+                //zlib.gunzip(data, function(err, d) {
+                    //console.log(ANSI(d.toString("utf8"), "green"));
+                //});
+            //} else {
+                //console.log(ANSI(data.toString("utf8"), "green"));
+            //}
+        //}
     });
 
     tcp_tracker.on('http response complete', function (session, http) {
@@ -409,9 +495,10 @@ function setup_listeners() {
             return;
         }
 
-        console.log(format_line_start(session.current_cap_time, session.dst_name, session.src_name) +
-            " #" + session.http_request_count + " HTTP " + http.response.http_version + " response complete " +
-            format_size(http.response.body_len));
+        //console.log(format_line_start(session.current_cap_time, session.dst_name, session.src_name) +
+            //" #" + session.http_request_count + " HTTP " + http.response.http_version + " response complete " +
+            //format_size(http.response.body_len));
+       flow.response(session.dst_name, session.src_name, http.response);
     });
 
     tcp_tracker.on('websocket upgrade', function (session, http) {
