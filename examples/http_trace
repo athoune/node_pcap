@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 
-/*global process require exports setInterval console */
+/* global process require exports setInterval console */
 
-var sys       = require("sys"),
+//[FIXME] use stdio as a stream to handle async gunzip?
+
+var util       = require("util"),
     node_http = require('http'),
     node_url  = require('url'),
+    zlib      = require('zlib'),
     pcap      = require("pcap"), pcap_session,
     ANSI,
     options   = {};
-    
+
 ANSI = (function () {
     // http://en.wikipedia.org/wiki/ANSI_escape_code
     var formats = {
@@ -101,7 +104,7 @@ function format_obj(obj) {
 
     return keys.map(function (key) {
         if (typeof obj[key] === 'object') {
-            return "    " + ANSI(key, "white") + sys.inspect(obj[key]);
+            return "    " + ANSI(key, "white") + util.inspect(obj[key]);
         } else {
             return "    " + ANSI(key, "white") + ": " + ANSI(obj[key], "grey");
         }
@@ -110,44 +113,45 @@ function format_obj(obj) {
 
 function usage_die(message) {
     if (message) {
-        sys.error("");
-        sys.error(message);
+        util.error("");
+        util.error(message);
     }
-    sys.error("");
-    sys.error("usage: http_trace [options]");
-    sys.error("");
-    sys.error("Capture options:");
-    sys.error("    -i <interface>           interface name for capture (def: first with an addr)");
-    sys.error("    -f <pcap_filter>         packet filter in pcap-filter(7) syntax (def: all TCP packets)");
-    sys.error("    -b <buffer>              size in MB to buffer between libpcap and app (def: 10)");
-    sys.error("");
-    sys.error("HTTP filtering:");
-    sys.error("    Filters are OR-ed together and may be specified more than once.");
-    sys.error("    --method <regex>         filter on method");
-    sys.error("    --host <regex>           filter on Host request header");
-    sys.error("    --url <regex>            filter on URL");
-    sys.error("    --user-agent <regex>     filter on User-Agent request header");
-    sys.error("");
-    sys.error("HTTP output:");
-    sys.error("    --headers                print headers of request and response (def: off)");
-    sys.error("    --bodies                 print request and response bodies, if any (def: off)");
-//    sys.error("    --group                  group all output for req/res (def: progressive)");
-    sys.error("    --tcp-verbose            display TCP events (def: off)");
-    sys.error("    --no-color               disable ANSI colors (def: pretty colors on)");
-    sys.error("");
-    sys.error("Examples:");
-    sys.error('    http_trace -f "tcp port 80"');
-    sys.error('       listen for TCP port 80 on the default device');
-    sys.error('    http_trace -i eth1 --method POST');
-    sys.error('       listen on eth1 for all traffic that has an HTTP POST');
-    sys.error('    http_trace --host ranney --headers');
-    sys.error('       matches ranney in Host header and prints req/res headers');
+    util.error("");
+    util.error("usage: http_trace [options]");
+    util.error("");
+    util.error("Capture options:");
+    util.error("    -i <interface>           interface name for capture (def: first with an addr)");
+    util.error("    -f <pcap_filter>         packet filter in pcap-filter(7) syntax (def: all TCP packets)");
+    util.error("    -b <buffer>              size in MB to buffer between libpcap and app (def: 10)");
+    util.error("");
+    util.error("HTTP filtering:");
+    util.error("    Filters are OR-ed together and may be specified more than once.");
+    util.error("    --method <regex>         filter on method");
+    util.error("    --host <regex>           filter on Host request header");
+    util.error("    --url <regex>            filter on URL");
+    util.error("    --user-agent <regex>     filter on User-Agent request header");
+    util.error("");
+    util.error("HTTP output:");
+    util.error("    --headers                print headers of request and response (def: off)");
+    util.error("    --bodies                 print request and response bodies, if any (def: off)");
+    util.error("    --gunzip                 uncompress gzip response (def: off)");
+//    util.error("    --group                  group all output for req/res (def: progressive)");
+    util.error("    --tcp-verbose            display TCP events (def: off)");
+    util.error("    --no-color               disable ANSI colors (def: pretty colors on)");
+    util.error("");
+    util.error("Examples:");
+    util.error('    http_trace -f "tcp port 80"');
+    util.error('       listen for TCP port 80 on the default device');
+    util.error('    http_trace -i eth1 --method POST');
+    util.error('       listen on eth1 for all traffic that has an HTTP POST');
+    util.error('    http_trace --host ranney --headers');
+    util.error('       matches ranney in Host header and prints req/res headers');
     process.exit(1);
 }
 
 // Someone else's options parsing library would parse options better, but I fear extra dependencies
 function parse_options() {
-    var argv_slice = process.argv.slice(2), 
+    var argv_slice = process.argv.slice(2),
         optnum = 0, opt, optname, optval,
         state = "match optname", matches,
         valid_options;
@@ -162,6 +166,7 @@ function parse_options() {
         "user-agent": { multiple: true, has_value: true, regex: true },
         "headers": { multiple: false, has_value: false },
         "bodies": { multiple: false, has_value: false },
+        "gunzip": {multiple: false, has_value: false },
 //        "group": { multiple: false, has_value: false },
         "tcp-verbose": { multiple: false, has_value: false },
         "no-color": { multiple: false, has_value: false },
@@ -189,7 +194,7 @@ function parse_options() {
 
     while (optnum < argv_slice.length) {
         opt = argv_slice[optnum];
-        
+
         if (state === "match optname") {
             matches = opt.match(/^[\-]{1,2}([^\-].*)/);
             if (matches !== null) {
@@ -216,7 +221,7 @@ function parse_options() {
         } else {
             throw new Error("Unknown state " + state + " in options parser");
         }
-        
+
         optnum += 1;
     }
     if (state === "match optval") {
@@ -229,7 +234,7 @@ function filter_match(http) {
         [http.request.method, options.method],
         [http.request.url, options.url],
         [http.request.headers.Host, options.host],
-        [http.request.headers["User-Agent"], options["user-agent"]],
+        [http.request.headers["User-Agent"], options["user-agent"]]
     ], filter_pair_num, filter_index;
 
     if (options.method || options.host || options.url || options["user-agent"]) {
@@ -261,7 +266,7 @@ function start_drop_watcher() {
     setInterval(function () {
         var stats = pcap_session.stats();
         if (stats.ps_drop > 0) {
-            console.log(ANSI("pcap dropped packets, need larger buffer or less work to do: " + sys.inspect(stats), "bold"));
+            console.log(ANSI("pcap dropped packets, need larger buffer or less work to do: " + util.inspect(stats), "bold"));
         }
     }, 2000);
 }
@@ -329,7 +334,7 @@ function setup_listeners() {
         }
 
         console.log(format_line_start(session.current_cap_time, session.src_name, session.dst_name) +
-            " #" + session.http_request_count + " HTTP " + http.request.http_version + " request: " + 
+            " #" + session.http_request_count + " HTTP " + http.request.http_version + " request: " +
             ANSI(ANSI(http.request.method, "bold") + " " + http.request.url, "yellow"));
 
         if (options.headers) {
@@ -343,7 +348,7 @@ function setup_listeners() {
         }
 
         console.log(format_line_start(session.current_cap_time, session.src_name, session.dst_name) +
-            " #" + session.http_request_count + " HTTP " + http.request.http_version + " request body: " + 
+            " #" + session.http_request_count + " HTTP " + http.request.http_version + " request body: " +
             format_size(data.length));
 
         if (options.bodies) {
@@ -384,12 +389,18 @@ function setup_listeners() {
         }
 
         console.log(format_line_start(session.current_cap_time, session.dst_name, session.src_name) +
-            " #" + session.http_request_count + " HTTP " + http.response.http_version + " response body: " + 
+            " #" + session.http_request_count + " HTTP " + http.response.http_version + " response body: " +
             format_size(data.length));
 
         if (options.bodies) {
             // TODO - this is not at all what you want for gzipped or binary data
-            console.log(ANSI(data.toString("utf8"), "green"));
+            if(options.gunzip && http.response.headers['Content-Encoding'] === 'gzip') {
+                zlib.gunzip(data, function(err, d) {
+                    console.log(ANSI(d.toString("utf8"), "green"));
+                });
+            } else {
+                console.log(ANSI(data.toString("utf8"), "green"));
+            }
         }
     });
 
@@ -399,13 +410,13 @@ function setup_listeners() {
         }
 
         console.log(format_line_start(session.current_cap_time, session.dst_name, session.src_name) +
-            " #" + session.http_request_count + " HTTP " + http.response.http_version + " response complete " + 
+            " #" + session.http_request_count + " HTTP " + http.response.http_version + " response complete " +
             format_size(http.response.body_len));
     });
 
     tcp_tracker.on('websocket upgrade', function (session, http) {
         // TODO - figure out how filters apply to WS
-        
+
         console.log(format_line_start(session.current_cap_time, session.dst_name, session.src_name) +
             " WebSocket upgrade " + ANSI(http.response.status_code + " " + node_http.STATUS_CODES[http.response.status_code], "yellow"));
         console.log(format_headers(http.response.headers));
@@ -423,7 +434,7 @@ function setup_listeners() {
         console.log(line_start + " WebSocket message " + format_size(message.length));
         try {
             obj = JSON.parse(message);
-            console.log("JSON: " + ANSI(sys.inspect(obj), "green"));
+            console.log("JSON: " + ANSI(util.inspect(obj), "green"));
         } catch (err) {
             console.log(ANSI(message, "green"));
         }
