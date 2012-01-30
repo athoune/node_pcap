@@ -107,7 +107,7 @@ function displaySession(session, resp_body) {
         try {
             var j = JSON.parse(session.request.body);
             console.log(ANSI('<<< JSON', 'green'));
-            console.dir(j);
+            console.log(util.inspect(j, false, null, true));
             console.log(ANSI('>>>', 'green'));
         } catch(err) {
             console.log(ANSI(session.request.body, 'green'));
@@ -116,11 +116,11 @@ function displaySession(session, resp_body) {
     console.log(ANSI('Response', 'blue'),
         session.response.head.status_code);
     console.log(format_headers(session.response.head.headers));
-    if(resp_body) {
+    if(resp_body && session.response.head.headers['Content-Type'].split('/')[0] !== 'image') {
         try {
             var jj = JSON.parse(resp_body);
             console.log(ANSI('<<< JSON', 'green'));
-            console.dir(jj);
+            console.log(util.inspect(jj, false, null, true));
             console.log(ANSI('>>>', 'green'));
         } catch(err) {
             console.log(ANSI(resp_body, 'green'));
