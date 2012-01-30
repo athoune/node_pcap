@@ -104,13 +104,27 @@ function displaySession(session, resp_body) {
     console.log(format_headers(session.request.head.headers));
     console.log('  body length', session.request.head.body_len);
     if(session.request.body) {
-        console.log(ANSI(session.request.body, 'green'));
+        try {
+            var j = JSON.parse(session.request.body);
+            console.log(ANSI('<<< JSON', 'green'));
+            console.dir(j);
+            console.log(ANSI('>>>', 'green'));
+        } catch(err) {
+            console.log(ANSI(session.request.body, 'green'));
+        }
     }
     console.log(ANSI('Response', 'blue'),
         session.response.head.status_code);
     console.log(format_headers(session.response.head.headers));
     if(resp_body) {
-        console.log(ANSI(resp_body, 'green'));
+        try {
+            var jj = JSON.parse(resp_body);
+            console.log(ANSI('<<< JSON', 'green'));
+            console.dir(jj);
+            console.log(ANSI('>>>', 'green'));
+        } catch(err) {
+            console.log(ANSI(resp_body, 'green'));
+        }
     }
     console.log();
 }
