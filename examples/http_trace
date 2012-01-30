@@ -473,6 +473,13 @@ function setup_listeners() {
             return;
         }
         //[FIXME] if not to heavy
+
+        //[FIXME] IPV6 bug and ugly patch.
+        var s = session.src_name.split(':');
+        if(s[0] === 'undefined') {
+            session.src_name = '::1:' + s[1];
+        }
+
         flow.response_data(session.dst_name, session.src_name, data);
         //console.log(format_line_start(session.current_cap_time, session.dst_name, session.src_name) +
             //" #" + session.http_request_count + " HTTP " + http.response.http_version + " response body: " +
