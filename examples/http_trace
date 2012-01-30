@@ -69,12 +69,12 @@ HttpFlow.prototype.response = function(to, from, response) {
     var r = this.sessions[[from, to]];
     this.emit('session', {
         request: {
-            dest : r.to,
+            dest : to,
             head: r.request,
-            body: r.request_body},
+            body: r.request_body ? r.request_body : null},
         response: {
             head: response,
-            body: r.response_body}
+            body: r.response_body ? r.response_body : null}
         }
         );
     delete this.sessions[[from, to]];
