@@ -1,8 +1,8 @@
 {   "name" : "pcap",
-    "version" : "0.3.0",
+    "version" : "0.3.1",
     "description" : "raw packet capture, decoding, and analysis",
     "author": "Matt Ranney <mjr@ranney.com>",
-    "main": "./pcap",
+    "main": "./lib/pcap",
     "repository": {
         "type": "git",
         "url": "git://github.com/mranney/node_pcap.git"
