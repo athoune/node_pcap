@@ -2,8 +2,6 @@
 
 /* global process require exports setInterval console */
 
-//[FIXME] use stdio as a stream to handle async gunzip?
-
 var util       = require("util"),
     node_http = require('http'),
     node_url  = require('url'),
@@ -90,10 +88,6 @@ flow.on('session', function(session) {
     if(session.response.body && session.response.head.headers['Content-Encoding'] === 'gzip') {
         zlib.gunzip(session.response.body, function(err, d) {
             displaySession(session, d);
-            //console.log(session);
-            //console.log(ANSI('response', 'red'), response);
-            //console.log(ANSI(d.toString('utf8'), "green"));
-            //console.log();
         });
     } else {
         displaySession(session, session.response.body);
@@ -115,7 +109,6 @@ function displaySession(session, resp_body) {
     console.log(ANSI('Response', 'blue'),
         session.response.head.status_code);
     console.log(format_headers(session.response.head.headers));
-    console.log('  body length', session.response.head.body_len);
     if(resp_body) {
         console.log(ANSI(resp_body, 'green'));
     }
